@@ -2,106 +2,116 @@
 """
 create_glyph_db.py
 
-Create an SQLite database of glyph bitstrings for arbitrary glyph sizes,
-with blacklist/whitelist kernel rules and optional symmetry filters.
+Generates a DB of square glyphs (GLYPH_SIDE x GLYPH_SIDE) using blacklist/whitelist
+kernels, a TEMPLATE to force on/off pixels, optional symmetry-rule filtering.
+Stores only boolean symmetry columns and an integer symmetry score in the DB (no floats).
 
-Example usage:
-    python create_glyph_db.py
-
-Configuration is near the top of the file (NO CLI parsing for brevity,
-but easy to add later).
+Shows a tqdm bar "Assignments" (total = 2 ** (nbits - forced_fixed_bits)).
+The bar's postfix shows how many glyphs have been inserted into the DB so far.
+No intermediate prints while running; a single summary print is shown at the end.
 """
 
 import sqlite3
 from collections import deque
-import math
 import ast
 from pathlib import Path
+from tqdm import tqdm
 
 # ---------------------------
 # CONFIG - edit to taste
 # ---------------------------
-GLYPH_W = 5
-GLYPH_H = 5
+GLYPH_SIDE = 5  # square glyph side length
+GLYPH_W = GLYPH_H = GLYPH_SIDE
 
-# Blacklisted kernels (if matched anywhere -> glyph rejected).
-# Kernel format: list of rows; cell values: 1 (on), 0 (off), -1 (don't care).
 BLACKLISTED_KERNELS = [
-	# 2x2 diagonal 1
-	[[1, 0],
-	 [0, 1]],
-	# 2x2 diagonal 2
-	[[0, 1],
-	 [1, 0]],
-	# 2x2 all ones
-	[[1, 1],
-	 [1, 1]],
-	# 2x2 all zeros
-	[[0, 0],
-	 [0, 0]],
-]
+	[
+		[1, 0],
+		[0, 1]
+	],
+	[
+		[0, 1],
+		[1, 0]
+	],
+	[
+		[1, 1],
+		[1, 1]
+	],
+	[
+		[0, 0],
+		[0, 0]
+	],
+]  # Kernels that MUSTN'T be present anywhere in the glyph, can be discarded early
 
-# Whitelisted kernels: at least one instance must appear somewhere in the glyph
-# (if you want to force corners, use a 5x5 kernel with 1 at corners and -1 elsewhere).
 WHITELISTED_KERNELS = [
-	# Example: ensure 4 corners of a 5x5 are filled (same idea as original).
-	# For GLYPH_W=5, GLYPH_H=5 this kernel is full-size.
-	[[1, -1, -1, -1, 1],
-	 [-1, -1, -1, -1, -1],
-	 [-1, -1, -1, -1, -1],
-	 [-1, -1, -1, -1, -1],
-	 [1, -1, -1, -1, 1]]
-]
 
-# Alternatively, set WHITELISTED_KERNELS = [] to not require any whitelist match.
-# To replicate your original "corners forced" behavior you can keep the kernel above.
+]  # Kernels that MUST be present somewhere in the glyph, checked on leaf time at the very end
 
-# Optional explicit forced-on positions as linear indices (row-major).
-# Example for 5x5 corners: [0,4,20,24]
-FORCED_ON_POSITIONS = []  # [] by default; you can set [0,4,20,24]
+TEMPLATE = [
+	[0, -1, -1, -1, 0],
+	[0, -1, -1, -1, 0],
+	[0, -1, -1, -1, 0],
+	[0, -1, -1, -1, 0],
+	[0, -1, -1, -1, 0],
+]  # Template dictates what positions must be on (1), off (0), or don't care about (-1)
 
-# Symmetry rule as logical expression over: horizontal, vertical, diag1, diag2, rot90, rot180
-# Examples:
-#  - "horizontal or vertical or diag1 or diag2 or rot90 or rot180"  (at least one symmetry)
-#  - "horizontal and vertical"  (both)
-#  - "" or None -> no symmetry filtering (we will still compute symmetry columns)
-# SYMMETRY_RULE = "horizontal or vertical or diag1 or diag2 or rot90 or rot180"
+
+def template_to_forced_positions(template, w, h):
+	"""
+	Convert a full-size template (h rows of w cols) containing 1,0,-1 into
+	two sets: forced_on_positions, forced_off_positions (linear indices).
+	Requires template to exactly match glyph size.
+	"""
+	if template is None:
+		return set(), set()
+	if len(template) != h or any(len(row) != w for row in template):
+		raise ValueError("TEMPLATE must be same size as glyph (rows x cols)")
+
+	forced_on = set()
+	forced_off = set()
+	for r in range(h):
+		for c in range(w):
+			v = template[r][c]
+			idx = r * w + c
+			if v == 1:
+				forced_on.add(idx)
+			elif v == 0:
+				forced_off.add(idx)
+	# -1 -> don't care, skip
+	# sanity: no overlaps
+	if forced_on & forced_off:
+		raise ValueError("TEMPLATE contains conflicting forced 1 and 0 at same position(s)")
+	return forced_on, forced_off
+
+
+# Convert the TEMPLATE into forced index sets (you as the user only touch TEMPLATE)
+FORCED_ON_POSITIONS, FORCED_OFF_POSITIONS = template_to_forced_positions(TEMPLATE, GLYPH_W, GLYPH_H)
+
+# Optional boolean symmetry rule expression (uses names: horizontal, vertical, diag1, diag2, rot90, rot180).
+# Leave empty to skip filtering at generation-time (we still compute and store booleans).
 SYMMETRY_RULE = ""
 
-# Output DB filename
-OUT_DB = Path("dbs") / f"glyphs_{GLYPH_W}_{GLYPH_H}.db"
+OUT_DB = Path("dbs") / f"glyphs_{GLYPH_SIDE}_{GLYPH_SIDE}.db"
 OUT_DB.parent.mkdir(parents=True, exist_ok=True)
 
-# Whether to print progress counts to stdout
 VERBOSE = True
 
 
 # ---------------------------
 
 
-# utility: convert bitlist to bitstring
+# helpers
 def bits_to_bitstring(bits):
 	return "".join("1" if b else "0" for b in bits)
 
 
-def bitstring_to_int(bs):
-	return int(bs, 2)
-
-
-# grid helpers
 def bitlist_to_grid(bits, w, h):
 	return [[bits[r * w + c] for c in range(w)] for r in range(h)]
 
 
-def grid_to_bitlist(grid):
-	return [1 if v else 0 for row in grid for v in row]
-
-
-# symmetry functions
+# transforms for square grids
 def rotate90(grid):
 	h = len(grid)
-	w = len(grid[0])
-	return [[grid[h - 1 - c][r] for c in range(h)] for r in range(w)]
+	return [[grid[h - 1 - c][r] for c in range(h)] for r in range(h)]
 
 
 def rotate180(grid):
@@ -109,25 +119,21 @@ def rotate180(grid):
 
 
 def reflect_vertical(grid):
-	# vertical axis (mirror left-right)
 	return [list(reversed(row)) for row in grid]
 
 
 def reflect_horizontal(grid):
-	# horizontal axis (mirror top-bottom)
 	return list(reversed([list(r) for r in grid]))
 
 
 def reflect_main_diag(grid):
 	h = len(grid)
-	w = len(grid[0])
-	return [[grid[c][r] for c in range(h)] for r in range(w)]
+	return [[grid[c][r] for c in range(h)] for r in range(h)]
 
 
 def reflect_anti_diag(grid):
 	h = len(grid)
-	w = len(grid[0])
-	return [[grid[w - 1 - c][h - 1 - r] for c in range(w)] for r in range(h)]
+	return [[grid[h - 1 - c][h - 1 - r] for c in range(h)] for r in range(h)]
 
 
 def equal_grid(a, b):
@@ -142,22 +148,13 @@ def equal_grid(a, b):
 
 def compute_symmetries(grid):
 	"""
-	Returns dict with boolean values for:
-	horizontal, vertical, diag1 (main), diag2 (anti), rot90, rot180
+	Returns dict of booleans:
+	horizontal, vertical, diag1, diag2, rot90, rot180
+	and integer score = sum of booleans (0..6)
 	"""
-	h = len(grid)
-	w = len(grid[0])
-	# canonicalize to same shape before comparison if rotations swap dims
-	# We'll compare by computing the transformed grid and then comparing with original.
 	sym = {}
 	sym["vertical"] = equal_grid(grid, reflect_vertical(grid))
 	sym["horizontal"] = equal_grid(grid, reflect_horizontal(grid))
-	sym["diag1"] = False
-	sym["diag2"] = False
-	sym["rot90"] = False
-	sym["rot180"] = False
-	# diag1 and diag2 only make geometric sense when w == h (square),
-	# but we still compute compare if shapes match after transpose.
 	try:
 		sym["diag1"] = equal_grid(grid, reflect_main_diag(grid))
 	except Exception:
@@ -166,7 +163,6 @@ def compute_symmetries(grid):
 		sym["diag2"] = equal_grid(grid, reflect_anti_diag(grid))
 	except Exception:
 		sym["diag2"] = False
-	# rotations
 	try:
 		sym["rot90"] = equal_grid(grid, rotate90(grid))
 	except Exception:
@@ -175,10 +171,11 @@ def compute_symmetries(grid):
 		sym["rot180"] = equal_grid(grid, rotate180(grid))
 	except Exception:
 		sym["rot180"] = False
-	return sym
+	score = sum(1 for v in sym.values() if v)
+	return sym, score
 
 
-# Connected components (4-neighbor)
+# connected components (4-neighbor)
 def count_components(grid):
 	h = len(grid)
 	w = len(grid[0])
@@ -202,13 +199,8 @@ def count_components(grid):
 	return comp
 
 
-# Kernel matching
+# kernel matching
 def kernel_matches_at(bits, w, h, kernel, anchor_r, anchor_c):
-	"""
-	bits: flat list length w*h (0/1)
-	kernel: list of rows with values in {1,0,-1}
-	anchor_r, anchor_c: top-left position where kernel is placed
-	"""
 	kh = len(kernel)
 	kw = len(kernel[0])
 	for kr in range(kh):
@@ -220,13 +212,11 @@ def kernel_matches_at(bits, w, h, kernel, anchor_r, anchor_c):
 			c = anchor_c + kc
 			if r < 0 or r >= h or c < 0 or c >= w:
 				return False
-			bit = bits[r * w + c]
-			if bit != kv:
+			if bits[r * w + c] != kv:
 				return False
 	return True
 
 
-# Precompute anchors for each kernel (list of anchors and their covered linear indices)
 def precompute_kernel_anchors(w, h, kernel):
 	kh = len(kernel)
 	kw = len(kernel[0])
@@ -247,13 +237,8 @@ def precompute_kernel_anchors(w, h, kernel):
 	return anchors
 
 
-# safe evaluator for symmetry expression
+# safe boolean evaluator for SYMMETRY_RULE
 class SafeBoolExprEvaluator(ast.NodeVisitor):
-	"""
-	Accepts a boolean expression AST comprised of Names, BoolOps (and/or), UnaryOp(not),
-	and Parens. Names resolved from `mapping`. Raises on unsafe nodes.
-	"""
-
 	def __init__(self, mapping):
 		self.mapping = mapping
 
@@ -278,8 +263,6 @@ class SafeBoolExprEvaluator(ast.NodeVisitor):
 			if isinstance(node.value, bool):
 				return node.value
 			raise ValueError("Only boolean literals allowed")
-		elif isinstance(node, ast.Call):
-			raise ValueError("Function calls not allowed")
 		else:
 			raise ValueError(f"Unsupported expression node: {type(node)}")
 
@@ -287,7 +270,6 @@ class SafeBoolExprEvaluator(ast.NodeVisitor):
 def eval_symmetry_rule(rule_str, sym_map):
 	if not rule_str:
 		return True
-	# we allow 'and', 'or', 'not' and names from sym_map
 	try:
 		tree = ast.parse(rule_str, mode="eval")
 		evaluator = SafeBoolExprEvaluator(sym_map)
@@ -297,34 +279,29 @@ def eval_symmetry_rule(rule_str, sym_map):
 
 
 # -----------------------
-# Main generation logic
+# generation
 # -----------------------
 def create_db(db_path):
-	w, h = GLYPH_W, GLYPH_H
+	w = h = GLYPH_SIDE
 	nbits = w * h
 
-	# precompute kernel anchors for pruning (blacklist) and final checks (whitelist)
-	blacklist_pre = []
-	for k in BLACKLISTED_KERNELS:
-		blacklist_pre.append({
-			"kernel": k,
-			"anchors": precompute_kernel_anchors(w, h, k)
-		})
-	whitelist_pre = []
-	for k in WHITELISTED_KERNELS:
-		whitelist_pre.append({
-			"kernel": k,
-			"anchors": precompute_kernel_anchors(w, h, k)
-		})
+	blacklist_pre = [{"kernel": k, "anchors": precompute_kernel_anchors(w, h, k)} for k in BLACKLISTED_KERNELS]
+	whitelist_pre = [{"kernel": k, "anchors": precompute_kernel_anchors(w, h, k)} for k in WHITELISTED_KERNELS]
 
-	# forced-on positions set
+	# use the sets created from TEMPLATE at the top of the file
 	forced_on = set(FORCED_ON_POSITIONS)
+	forced_off = set(FORCED_OFF_POSITIONS)
 
-	# prepare DB
+	# validate indices are in-range and there are no conflicts
+	if any((p < 0 or p >= nbits) for p in forced_on | forced_off):
+		raise ValueError("Some forced positions are out of range for this glyph size")
+	if forced_on & forced_off:
+		raise ValueError("Conflict: some positions are forced both ON and OFF: " + str(sorted(forced_on & forced_off)))
+
 	conn = sqlite3.connect(str(db_path))
 	cur = conn.cursor()
 
-	# tables
+	# create table with only booleans + integer score
 	cur.execute("""
                 CREATE TABLE IF NOT EXISTS glyphs
                 (
@@ -360,29 +337,14 @@ def create_db(db_path):
                     INTEGER
                 )
 				""")
-	# store meta about generation
-	cur.execute("""
-                CREATE TABLE IF NOT EXISTS meta
-                (
-                    k
-                    TEXT
-                    PRIMARY
-                    KEY,
-                    v
-                    TEXT
-                )
-				""")
+	cur.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
 	cur.execute("DELETE FROM meta WHERE k IN ('w','h','nbits')")
 	cur.execute("INSERT OR REPLACE INTO meta(k,v) VALUES (?,?)", ("w", str(w)))
 	cur.execute("INSERT OR REPLACE INTO meta(k,v) VALUES (?,?)", ("h", str(h)))
 	cur.execute("INSERT OR REPLACE INTO meta(k,v) VALUES (?,?)", ("nbits", str(nbits)))
 	conn.commit()
 
-	# incremental/backtracking enumerator with pruning on blacklisted kernels
-	insert_count = 0
-
-	# Precompute for each index which kernel anchors become 'fully set' when this index is written.
-	# For all blacklist anchors, we will map max_idx -> list of (kernel, anchor_info)
+	# precompute blacklist anchors mapped by max_idx for pruning
 	blacklist_map_by_maxidx = {}
 	for item in blacklist_pre:
 		k = item["kernel"]
@@ -390,7 +352,7 @@ def create_db(db_path):
 			m = a["max_idx"]
 			blacklist_map_by_maxidx.setdefault(m, []).append((k, a))
 
-	# similarly for whitelists (useful if you want to detect a match early and flag)
+	# precompute whitelist map (not used for pruning by default)
 	whitelist_map_by_maxidx = {}
 	for item in whitelist_pre:
 		k = item["kernel"]
@@ -398,29 +360,44 @@ def create_db(db_path):
 			m = a["max_idx"]
 			whitelist_map_by_maxidx.setdefault(m, []).append((k, a))
 
-	# We'll do simple row-major generation.
+	# initialize bits and pre-set forced-on positions
 	bits = [0] * nbits
-	# pre-set forced-on positions
 	for p in forced_on:
 		bits[p] = 1
 
-	# For faster kernel matching in incremental stage, create a mapping from anchor covered indices
+	# forced_off positions are already 0; they will be skipped in the recursion
+
 	def anchor_matches_current(bits, kernel, anchor_info):
-		# anchor_info has 'anchor', 'covered'
 		ar, ac = anchor_info["anchor"]
 		return kernel_matches_at(bits, w, h, kernel, ar, ac)
 
-	# recursive/backtracking
+	insert_count = 0
+	leaf_count = 0
+
+	# ---- print status BEFORE creating bars so bars draw cleanly ----
+	if VERBOSE:
+		print(
+			f"Starting generation for {w}x{h} glyphs ({nbits} bits), assignments={2 ** (nbits - len(forced_on) - len(forced_off))}")
+		print(f"Output DB: {db_path}")
+		print(f"Blacklisted kernels: {len(BLACKLISTED_KERNELS)}; Whitelisted kernels: {len(WHITELISTED_KERNELS)}")
+		if SYMMETRY_RULE:
+			print(f"Applying symmetry rule: {SYMMETRY_RULE}")
+
+	# ---- create progress bar AFTER prints to avoid mixing output ----
+	total_assignments = 2 ** (nbits - len(forced_on) - len(forced_off))
+	assign_bar = tqdm(total=total_assignments, desc="Assignments", unit="assign")
+
 	def backtrack(pos):
-		nonlocal insert_count
-		# skipping positions already forced on: forced positions should still be considered "set"
+		nonlocal insert_count, leaf_count
 		if pos == nbits:
-			# finished candidate: perform final checks (whitelist, symmetry rule)
+			leaf_count += 1
+			assign_bar.update(1)
+
 			bs = bits_to_bitstring(bits)
 			intrepr = int(bs, 2)
 			grid = bitlist_to_grid(bits, w, h)
-			# whitelist check: if any whitelist exists, require at least one match
-			ok = True
+
+			# whitelist must be present if configured
 			if WHITELISTED_KERNELS:
 				found = False
 				for item in whitelist_pre:
@@ -432,33 +409,28 @@ def create_db(db_path):
 					if found:
 						break
 				if not found:
-					ok = False
-			if not ok:
-				return
+					return
 
-			# compute metadata
 			filled = sum(bits)
 			filled_ratio = filled / nbits
 			comps = count_components(grid)
-			syms = compute_symmetries(grid)
-			score = sum(1 for v in syms.values() if v)
+			syms, score = compute_symmetries(grid)
 
-			# check symmetry_rule (if provided)
+			# symmetry rule filter (if set)
 			if SYMMETRY_RULE:
 				try:
-					passes_sym_rule = eval_symmetry_rule(SYMMETRY_RULE, syms)
+					passes = eval_symmetry_rule(SYMMETRY_RULE, syms)
 				except Exception as e:
 					raise RuntimeError(f"Error evaluating symmetry rule: {e}")
-				if not passes_sym_rule:
+				if not passes:
 					return
 
-			# insert into DB
 			cur.execute("""
                         INSERT
                         OR IGNORE INTO glyphs (
-                bitstring,int_repr,filled,filled_ratio,components,
-                horizontal,vertical,diag1,diag2,rot90,rot180,score
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+				bitstring,int_repr,filled,filled_ratio,components,
+				horizontal,vertical,diag1,diag2,rot90,rot180,score
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 						""", (
 							bs, intrepr, filled, filled_ratio, comps,
 							1 if syms["horizontal"] else 0,
@@ -469,30 +441,37 @@ def create_db(db_path):
 							1 if syms["rot180"] else 0,
 							score
 						))
-			insert_count += 1
+			if cur.rowcount != 0:
+				insert_count += 1
+				# update postfix on the single progress bar to reflect inserted count
+				assign_bar.set_postfix(inserted=insert_count)
+			# occasional commit (no printing while bars are live)
 			if VERBOSE and insert_count % 5000 == 0:
 				conn.commit()
-				print(f"Inserted {insert_count} glyphs so far...")
 			return
 
-		# if this position is forced-on, it is already set (we set them earlier)
+		# forced-on: treat as set but still check pruning anchors
 		if pos in forced_on:
-			# skip writing (it's already 1) but we still need to run pruning checks as if it was just placed
-			# to simplify, we treat it as placed and proceed
-			# but we must ensure we don't reassign it here
-			# After "placing" we still need to check any blacklist anchors whose max idx == pos
 			if pos in blacklist_map_by_maxidx:
 				for k, a in blacklist_map_by_maxidx[pos]:
-					# check match
 					if anchor_matches_current(bits, k, a):
-						return  # prune
-			# continue
+						return
+			backtrack(pos + 1)
+			return
+
+		# forced-off: treat as fixed zero; skip branching but still check pruning anchors
+		if pos in forced_off:
+			# ensure bit is zero (it should be by default)
+			bits[pos] = 0
+			if pos in blacklist_map_by_maxidx:
+				for k, a in blacklist_map_by_maxidx[pos]:
+					if anchor_matches_current(bits, k, a):
+						return
 			backtrack(pos + 1)
 			return
 
 		# try 0
 		bits[pos] = 0
-		# prune: check any blacklist anchors whose max_idx == pos
 		pruned = False
 		if pos in blacklist_map_by_maxidx:
 			for k, a in blacklist_map_by_maxidx[pos]:
@@ -513,21 +492,13 @@ def create_db(db_path):
 		if not pruned:
 			backtrack(pos + 1)
 
-		# reset (not strictly necessary because it will be overwritten)
 		bits[pos] = 0
-
-	# run generator
-	if VERBOSE:
-		print(f"Starting generation for {w}x{h} glyphs ({nbits} bits)...")
-		print(f"Output DB: {db_path}")
-		print(f"Blacklisted kernels: {len(BLACKLISTED_KERNELS)}; Whitelisted kernels: {len(WHITELISTED_KERNELS)}")
-		if SYMMETRY_RULE:
-			print(f"Applying symmetry rule: {SYMMETRY_RULE}")
 
 	backtrack(0)
 	conn.commit()
+	assign_bar.close()
 	if VERBOSE:
-		print(f"Generation complete. Inserted {insert_count} glyphs.")
+		print(f"Generation complete. Inserted {insert_count} glyphs. Leaves visited: {leaf_count}")
 	conn.close()
 
 
