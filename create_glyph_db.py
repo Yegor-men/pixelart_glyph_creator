@@ -5,28 +5,29 @@ create_glyph_db.py
 Generates an SQLite DB of glyph bitstrings driven by TEMPLATE shape.
 - TEMPLATE defines glyph H x W and forced-on (1) / forced-off (0) / don't-care (-1).
 - Blacklisted kernels prune during search; whitelisted kernels are required (leaf-time).
-- No symmetry checks are performed or stored.
-- Computes an 'overall_entropy' for each glyph (rows+cols binary Shannon entropy average).
-- Writes DB to: dbs/glyphs_{w}_{h}.db
+- Initializes assigned Bradley-Terry (assigned_bt) to 0.5 for every created glyph and
+  assigned_logit to 0.0. predicted_bt is left NULL for the model to fill later.
+
+Writes DB to: dbs/glyphs_{W}_{H}.db
 """
 
 import sqlite3
 from collections import deque
-import math
 from pathlib import Path
 from tqdm import tqdm
+import math
 
 # ---------------------------
 # CONFIG (edit template & kernels)
 # ---------------------------
 
 # TEMPLATE: rows x cols matrix of 1/0/-1 (1=must be ON, 0=must be OFF, -1=don't care)
-# Example: 5x5 with vertical 3x5 strip allowed (left/right forced OFF)
 TEMPLATE = [
+	[1, -1, -1, -1, 1],
 	[-1, -1, -1, -1, -1],
 	[-1, -1, -1, -1, -1],
 	[-1, -1, -1, -1, -1],
-	[-1, -1, -1, -1, -1],
+	[1, -1, -1, -1, 1],
 ]
 
 # Blacklisted kernels (if matched anywhere -> glyph rejected).
@@ -39,7 +40,12 @@ BLACKLISTED_KERNELS = [
 
 # Whitelisted kernels: at least one instance must appear somewhere in the glyph
 WHITELISTED_KERNELS = [
-	# (empty by default)
+	# Example: uncomment to require a plus-shape 3x3 somewhere
+	# [
+	#    [0,1,0],
+	#    [1,1,1],
+	#    [0,1,0]
+	# ]
 ]
 
 VERBOSE = True
@@ -148,42 +154,6 @@ def precompute_kernel_anchors(w, h, kernel):
 	return anchors
 
 
-# ENTROPY metric: rows + columns binary entropy average -----------------
-def binary_entropy(p: float) -> float:
-	"""Shannon binary entropy normalized to bits (max 1 at p=0.5)."""
-	if p <= 0.0 or p >= 1.0:
-		return 0.0
-	return -(p * math.log2(p) + (1 - p) * math.log2(1 - p))
-
-
-def compute_entropy_grid(grid):
-	"""
-	Compute per-row & per-column binary entropy and return overall in [0,1].
-	Method: for each row compute p = ones/width -> entropy_row; mean over rows.
-	        for each col compute p = ones/height -> entropy_col; mean over cols.
-	        overall = (mean_row_entropy + mean_col_entropy)/2
-	"""
-	h = len(grid)
-	w = len(grid[0])
-	# rows
-	row_ent = 0.0
-	for r in range(h):
-		ones = sum(1 for c in range(w) if grid[r][c])
-		p = ones / w
-		row_ent += binary_entropy(p)
-	row_ent /= h
-	# cols
-	col_ent = 0.0
-	for c in range(w):
-		ones = sum(1 for r in range(h) if grid[r][c])
-		p = ones / h
-		col_ent += binary_entropy(p)
-	col_ent /= w
-	overall = (row_ent + col_ent) / 2.0
-	# overall is between 0 and 1
-	return overall
-
-
 # -----------------------
 # MAIN: create DB
 # -----------------------
@@ -208,7 +178,7 @@ def create_db(db_path):
 	conn = sqlite3.connect(str(db_path))
 	cur = conn.cursor()
 
-	# create table: no symmetry columns; we store overall_entropy
+	# create table: store assigned_bt (starts at 0.5), assigned_logit (0.0), predicted_bt (NULL)
 	cur.execute("""
                 CREATE TABLE IF NOT EXISTS glyphs
                 (
@@ -228,7 +198,11 @@ def create_db(db_path):
                     REAL,
                     components
                     INTEGER,
-                    overall_entropy
+                    assigned_bt
+                    REAL,
+                    assigned_logit
+                    REAL,
+                    predicted_bt
                     REAL
                 )
 				""")
@@ -307,14 +281,18 @@ def create_db(db_path):
 			filled = sum(bits)
 			filled_ratio = filled / nbits
 			comps = count_components(grid)
-			overall_entropy = compute_entropy_grid(grid)
+
+			# initialize assigned BT fields
+			assigned_bt = 0.5
+			assigned_logit = 0.0
+			predicted_bt = None
 
 			cur.execute("""
                         INSERT
                         OR IGNORE INTO glyphs (
-                    bitstring,int_repr,filled,filled_ratio,components,overall_entropy
-                ) VALUES (?,?,?,?,?,?)
-						""", (bs, intrepr, filled, filled_ratio, comps, overall_entropy))
+                    bitstring,int_repr,filled,filled_ratio,components,assigned_bt,assigned_logit,predicted_bt
+                ) VALUES (?,?,?,?,?,?,?,?)
+						""", (bs, intrepr, filled, filled_ratio, comps, assigned_bt, assigned_logit, predicted_bt))
 			if cur.rowcount != 0:
 				insert_count += 1
 				assign_bar.set_postfix(inserted=insert_count)
