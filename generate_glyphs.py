@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """
-create_glyph_db.py
+generate_glyphs.py
 
-Generates an SQLite DB of glyph bitstrings driven by TEMPLATE shape.
-- TEMPLATE defines glyph H x W and forced-on (1) / forced-off (0) / don't-care (-1).
-- Blacklisted kernels prune during search; whitelisted kernels are required (leaf-time).
-- Initializes assigned Bradley-Terry (assigned_bt) to 0.5 for every created glyph and
-  assigned_logit to 0.0. predicted_bt is left NULL for the model to fill later.
+Single-file glyph generator + exporter.
 
-Writes DB to: dbs/glyphs_{W}_{H}.db
+- Edit TEMPLATE, BLACKLISTED_KERNELS, WHITELISTED_KERNELS and EXPORT_DIR below.
+- Run: python generate_glyphs.py
+- Output structure (if EXPORT_DIR='foo'):
+    foo/
+      glyphs/           <- PNGs, names are bitstrings (e.g. 010110....png)
+      metadata.csv      <- bitstring,width,height,filename
+      nodes.csv         <- Id,Label,filled,components
+      edges.csv         <- Source,Target,Weight  (undirected edges, weight=1)
 """
-
-import sqlite3
 from collections import deque
 from pathlib import Path
-from tqdm import tqdm
 import math
+import csv
+from tqdm import tqdm
+from PIL import Image
+import sys
 
 # ---------------------------
-# CONFIG (edit template & kernels)
+# USER CONFIG
 # ---------------------------
 
 # TEMPLATE: rows x cols matrix of 1/0/-1 (1=must be ON, 0=must be OFF, -1=don't care)
@@ -30,45 +34,59 @@ TEMPLATE = [
 	[1, -1, -1, -1, 1],
 ]
 
+# TEMPLATE = [
+# 	[1, -1, 1],
+# 	[-1, -1, -1],
+# 	[-1, -1, -1],
+# 	[-1, -1, -1],
+# 	[1, -1, 1],
+# ]
+
 # Blacklisted kernels (if matched anywhere -> glyph rejected).
 BLACKLISTED_KERNELS = [
-	[[1, 0], [0, 1]],
-	[[0, 1], [1, 0]],
-	[[1, 1], [1, 1]],
-	[[0, 0], [0, 0]],
+	[
+		[1, 0],
+		[0, 1]
+	],
+	[
+		[0, 1],
+		[1, 0]
+	],
+	[
+		[1, 1],
+		[1, 1]
+	],
+	[
+		[0, 0],
+		[0, 0]
+	],
 ]
 
 # Whitelisted kernels: at least one instance must appear somewhere in the glyph
 WHITELISTED_KERNELS = [
-	# Example: uncomment to require a plus-shape 3x3 somewhere
+	# Example:
 	# [
-	#    [0,1,0],
-	#    [1,1,1],
-	#    [0,1,0]
+	# 	[0, 1, 0],
+	# 	[1, 1, 1],
+	# 	[0, 1, 0]
 	# ]
 ]
 
+# Export folder name (edit)
+EXPORT_DIR = Path("foo")
+
+# Image rendering params
+SCALE = 20  # pixels per cell
+MARGIN = 1  # cells of margin around glyph when saving individual pngs
+
 VERBOSE = True
+
+
 # ---------------------------
 
-# derive w,h from TEMPLATE
-if TEMPLATE is None:
-	raise SystemExit("TEMPLATE must be provided (list of rows).")
-H = len(TEMPLATE)
-if H == 0:
-	raise SystemExit("TEMPLATE must have at least one row.")
-W = len(TEMPLATE[0])
-if any(len(row) != W for row in TEMPLATE):
-	raise SystemExit("All TEMPLATE rows must have the same length.")
-OUT_DB = Path("dbs") / f"glyphs_{W}_{H}.db"
-OUT_DB.parent.mkdir(parents=True, exist_ok=True)
 
-
-# helpers ---------------------------------------------------------
+# ---------- helpers ----------
 def template_to_forced_positions(template, w, h):
-	"""
-	Return two sets (forced_on, forced_off) of linear indices.
-	"""
 	forced_on = set()
 	forced_off = set()
 	for r in range(h):
@@ -79,7 +97,6 @@ def template_to_forced_positions(template, w, h):
 				forced_on.add(idx)
 			elif v == 0:
 				forced_off.add(idx)
-	# sanity
 	if forced_on & forced_off:
 		raise ValueError("TEMPLATE contains conflicting forced 1 and 0 at same position(s)")
 	return forced_on, forced_off
@@ -116,7 +133,6 @@ def count_components(grid):
 	return comp
 
 
-# kernel matching (unchanged)
 def kernel_matches_at(bits, w, h, kernel, anchor_r, anchor_c):
 	kh = len(kernel)
 	kw = len(kernel[0])
@@ -154,66 +170,50 @@ def precompute_kernel_anchors(w, h, kernel):
 	return anchors
 
 
-# -----------------------
-# MAIN: create DB
-# -----------------------
-def create_db(db_path):
-	w = W
-	h = H
+def render_grid_to_png(grid, scale, margin, out_path):
+	h = len(grid)
+	w = len(grid[0])
+	size_px = (w + 2 * margin) * scale, (h + 2 * margin) * scale
+	img = Image.new("RGB", size_px, (255, 255, 255))
+	px = img.load()
+	for r in range(h):
+		for c in range(w):
+			if grid[r][c]:
+				x0 = (c + margin) * scale
+				y0 = (r + margin) * scale
+				for dx in range(scale):
+					for dy in range(scale):
+						px[x0 + dx, y0 + dy] = (0, 0, 0)
+	out_path.parent.mkdir(parents=True, exist_ok=True)
+	img.save(str(out_path))
+
+
+# ---------- main generation & export ----------
+def generate_and_export(export_dir: Path):
+	# derive sizes
+	if TEMPLATE is None:
+		raise SystemExit("TEMPLATE must be provided (list of rows).")
+	h = len(TEMPLATE)
+	if h == 0:
+		raise SystemExit("TEMPLATE must have at least one row.")
+	w = len(TEMPLATE[0])
+	if any(len(row) != w for row in TEMPLATE):
+		raise SystemExit("All TEMPLATE rows must have the same length.")
 	nbits = w * h
 
-	# precompute kernel anchors
+	# precompute anchors
 	blacklist_pre = [{"kernel": k, "anchors": precompute_kernel_anchors(w, h, k)} for k in BLACKLISTED_KERNELS]
 	whitelist_pre = [{"kernel": k, "anchors": precompute_kernel_anchors(w, h, k)} for k in WHITELISTED_KERNELS]
 
-	# forced positions derived from TEMPLATE
 	forced_on, forced_off = template_to_forced_positions(TEMPLATE, w, h)
 
-	# sanity checks
+	# quick sanity
 	if any((p < 0 or p >= nbits) for p in forced_on | forced_off):
 		raise ValueError("Some forced positions are out of range for this glyph size")
 	if forced_on & forced_off:
 		raise ValueError("Conflict: some positions are forced both ON and OFF: " + str(sorted(forced_on & forced_off)))
 
-	conn = sqlite3.connect(str(db_path))
-	cur = conn.cursor()
-
-	# create table: store assigned_bt (starts at 0.5), assigned_logit (0.0), predicted_bt (NULL)
-	cur.execute("""
-                CREATE TABLE IF NOT EXISTS glyphs
-                (
-                    id
-                    INTEGER
-                    PRIMARY
-                    KEY
-                    AUTOINCREMENT,
-                    bitstring
-                    TEXT
-                    UNIQUE,
-                    int_repr
-                    INTEGER,
-                    filled
-                    INTEGER,
-                    filled_ratio
-                    REAL,
-                    components
-                    INTEGER,
-                    assigned_bt
-                    REAL,
-                    assigned_logit
-                    REAL,
-                    predicted_bt
-                    REAL
-                )
-				""")
-	cur.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
-	cur.execute("DELETE FROM meta WHERE k IN ('w','h','nbits')")
-	cur.execute("INSERT OR REPLACE INTO meta(k,v) VALUES (?,?)", ("w", str(w)))
-	cur.execute("INSERT OR REPLACE INTO meta(k,v) VALUES (?,?)", ("h", str(h)))
-	cur.execute("INSERT OR REPLACE INTO meta(k,v) VALUES (?,?)", ("nbits", str(nbits)))
-	conn.commit()
-
-	# blacklist mapping by max_idx for pruning
+	# mapping for blacklist anchors by max_idx
 	blacklist_map_by_maxidx = {}
 	for item in blacklist_pre:
 		k = item["kernel"]
@@ -221,7 +221,7 @@ def create_db(db_path):
 			m = a["max_idx"]
 			blacklist_map_by_maxidx.setdefault(m, []).append((k, a))
 
-	# whitelist anchors (checked at leaf-time)
+	# whitelist anchors map (we'll check at leaf time)
 	whitelist_map_by_maxidx = {}
 	for item in whitelist_pre:
 		k = item["kernel"]
@@ -229,32 +229,28 @@ def create_db(db_path):
 			m = a["max_idx"]
 			whitelist_map_by_maxidx.setdefault(m, []).append((k, a))
 
-	# init bits and apply forced sets
 	bits = [0] * nbits
 	for p in forced_on:
 		bits[p] = 1
 
-	# forced_off positions already 0
+	glyphs = []  # will hold dicts: bitstring,int_repr,filled,filled_ratio,components,w,h
 
-	def anchor_matches_current(bits, kernel, anchor_info):
+	def anchor_matches_current(bits_local, kernel, anchor_info):
 		ar, ac = anchor_info["anchor"]
-		return kernel_matches_at(bits, w, h, kernel, ar, ac)
+		return kernel_matches_at(bits_local, w, h, kernel, ar, ac)
 
-	insert_count = 0
-	leaf_count = 0
-
-	# prints before bar
+	# total assignments (theoretical)
 	total_assignments = 2 ** (nbits - len(forced_on) - len(forced_off))
 	if VERBOSE:
-		print(f"Starting generation for {w}x{h} glyphs ({nbits} bits), assignments={total_assignments}")
-		print(f"Output DB: {db_path}")
+		print(f"Starting generation for {w}x{h} glyphs ({nbits} bits), theoretical assignments={total_assignments}")
 		print(f"Blacklisted kernels: {len(BLACKLISTED_KERNELS)}; Whitelisted kernels: {len(WHITELISTED_KERNELS)}")
 
-	assign_bar = tqdm(total=total_assignments, desc="Assignments", unit="assign")
+	assign_bar = tqdm(total=total_assignments, desc="Leaves", unit="leaf")
 
-	# backtracking
+	leaf_count = 0
+
 	def backtrack(pos):
-		nonlocal insert_count, leaf_count
+		nonlocal leaf_count
 		if pos == nbits:
 			leaf_count += 1
 			assign_bar.update(1)
@@ -264,7 +260,7 @@ def create_db(db_path):
 			intrepr = int(bs, 2)
 			grid = bitlist_to_grid(bits, w, h)
 
-			# whitelist: require at least one anchor match if any whitelist kernels provided
+			# whitelist: if defined, require at least one anchor match somewhere
 			if WHITELISTED_KERNELS:
 				found = False
 				for item in whitelist_pre:
@@ -282,26 +278,18 @@ def create_db(db_path):
 			filled_ratio = filled / nbits
 			comps = count_components(grid)
 
-			# initialize assigned BT fields
-			assigned_bt = 0.5
-			assigned_logit = 0.0
-			predicted_bt = None
-
-			cur.execute("""
-                        INSERT
-                        OR IGNORE INTO glyphs (
-                    bitstring,int_repr,filled,filled_ratio,components,assigned_bt,assigned_logit,predicted_bt
-                ) VALUES (?,?,?,?,?,?,?,?)
-						""", (bs, intrepr, filled, filled_ratio, comps, assigned_bt, assigned_logit, predicted_bt))
-			if cur.rowcount != 0:
-				insert_count += 1
-				assign_bar.set_postfix(inserted=insert_count)
-			# occasional commit
-			if VERBOSE and insert_count % 5000 == 0:
-				conn.commit()
+			glyphs.append({
+				"bitstring": bs,
+				"int_repr": intrepr,
+				"filled": filled,
+				"filled_ratio": filled_ratio,
+				"components": comps,
+				"w": w,
+				"h": h,
+			})
 			return
 
-		# if forced-on, skip branching but still check blacklist anchors that finalize at this pos
+		# forced-on pos
 		if pos in forced_on:
 			if pos in blacklist_map_by_maxidx:
 				for k, a in blacklist_map_by_maxidx[pos]:
@@ -310,12 +298,14 @@ def create_db(db_path):
 			backtrack(pos + 1)
 			return
 
-		# if forced-off, skip branching similarly
+		# forced-off pos
 		if pos in forced_off:
 			bits[pos] = 0
 			if pos in blacklist_map_by_maxidx:
 				for k, a in blacklist_map_by_maxidx[pos]:
 					if anchor_matches_current(bits, k, a):
+						# reset (already zero but to be explicit)
+						bits[pos] = 0
 						return
 			backtrack(pos + 1)
 			return
@@ -342,17 +332,76 @@ def create_db(db_path):
 		if not pruned:
 			backtrack(pos + 1)
 
-		# reset bit
+		# reset
 		bits[pos] = 0
 
-	# run
+	# Run backtracking
 	backtrack(0)
-	conn.commit()
 	assign_bar.close()
 	if VERBOSE:
-		print(f"Generation complete. Inserted {insert_count} glyphs. Leaves visited: {leaf_count}")
-	conn.close()
+		print(f"Generation complete. Leaves visited: {leaf_count}. Valid glyphs: {len(glyphs)}")
+
+	# EXPORT: write images + metadata + nodes/edges
+	export_dir.mkdir(parents=True, exist_ok=True)
+	glyphs_dir = export_dir / "glyphs"
+	glyphs_dir.mkdir(parents=True, exist_ok=True)
+
+	metadata_path = export_dir / "metadata.csv"
+	nodes_path = export_dir / "nodes.csv"
+	edges_path = export_dir / "edges.csv"
+
+	# write individual pngs and minimal metadata (bitstring,width,height,filename)
+	with open(metadata_path, "w", newline="") as mf:
+		mw = csv.writer(mf)
+		mw.writerow(["bitstring", "width", "height", "filename"])
+		for g in tqdm(glyphs, desc="Rendering glyph PNGs", unit="glyph"):
+			bs = g["bitstring"]
+			g_w = g["w"]
+			g_h = g["h"]
+			grid = bitlist_to_grid([1 if ch == "1" else 0 for ch in bs], g_w, g_h)
+			fname = f"{bs}.png"
+			out_path = glyphs_dir / fname
+			render_grid_to_png(grid, SCALE, MARGIN, out_path)
+			mw.writerow([bs, g_w, g_h, f"glyphs/{fname}"])
+
+	# write nodes.csv (Id,Label,filled,components)
+	with open(nodes_path, "w", newline="") as nf:
+		nw = csv.writer(nf)
+		nw.writerow(["Id", "Label", "filled", "components"])
+		for g in glyphs:
+			bs = g["bitstring"]
+			nw.writerow([bs, bs, g["filled"], g["components"]])
+
+	# write edges.csv (pairwise Hamming distance 1)
+	bitset = set(g["bitstring"] for g in glyphs)
+	nbits_local = nbits
+	with open(edges_path, "w", newline="") as ef:
+		ew = csv.writer(ef)
+		ew.writerow(["Source", "Target", "Weight"])
+		for g in tqdm(glyphs, desc="Generating edges", unit="node"):
+			bs = g["bitstring"]
+			bl = list(bs)
+			for i in range(nbits_local):
+				orig = bl[i]
+				bl[i] = "0" if orig == "1" else "1"
+				neigh = "".join(bl)
+				bl[i] = orig
+				# write only once for undirected graph
+				if neigh in bitset and bs < neigh:
+					ew.writerow([bs, neigh, 1])
+
+	if VERBOSE:
+		print("Export complete:")
+		print(" - metadata:", metadata_path)
+		print(" - glyph PNGs:", glyphs_dir)
+		print(" - nodes:", nodes_path)
+		print(" - edges:", edges_path)
+		print(f"Total glyphs exported: {len(glyphs)}")
+
+	return export_dir
 
 
 if __name__ == "__main__":
-	create_db(OUT_DB)
+	# Run generator
+	out = generate_and_export(EXPORT_DIR)
+	print("Done. Export folder:", out)

@@ -3,42 +3,61 @@
 
 # Pixelart Glyph Creator
 
-A simple pixelart glyph creator, allowing to create arbitrary size glyphs with arbitrary size blacklist and whitelist
-kernel rules. Allows for extra symmetry rules to not make asymmetric glyphs.
+A simple, procedural binary glyph creator, allowing to create arbitrary size glyphs with arbitrary size blacklist and
+whitelist kernels.
 
-Does things in 3 steps:
+To use, first run `generate_glyphs.py` to create the export folder `foo/` with all the glyphs as .png images and the
+`metadata.csv` and Gephi compatible `nodes.csv` and `edges.csv` (edge between glyphs that are 1 bit flip away). Then run
+`render_grid_from_export.py` to render a grid of glyphs from the export
+folder.
 
-1. Run `create_glyph_db.py` to create an SQLite database in `dbs/` based on the defined rules (all renders use default
-   rules).
-2. Run `render_glyphs_from_db.py` to create a filestructure with all the glyphs rendered as png images, sorted by
-   folders based on the aesthetic score which is the sum of how many types of symmetries it fulfills.
-3. Run `render_grid_from_images.py` to render these grids of glyphs that you see.
+Internally, the code uses 3 main things:
 
-For example, with the defaults present, the initial 2^25 possible glyphs are cut down to 29k. 27k of them don't have any
-symmetry and thus fall into the score 0 bucket, the other 2k are nice and "clean". Some nice looking glyphs still exist
-with a score of 0, it's just that they're a lot harder to find, they're likely to be remembered as "The clean glyph X
-but slightly off", so at that point might as well just use the original clean one. Here's a small comparison table of
-the grid of random glyphs rendered if the completely asymmetric ones are excluded or included:
+1. Template
+2. Blacklist
+3. Whitelist
 
-| Asymmetric Included                      | Asymmetric Excluded                     |
-|------------------------------------------|-----------------------------------------|
-| ![image](media/render_10x10_0123456.png) | ![image](media/render_10x10_123456.png) |
+The template dictates which pixels are fixed, how they must look like on the output end. The blacklist contains kernels
+that mustn't be present anywhere in the glyph. The whitelist contains kernels that must be contained at least once in
+the glyph. The template directly reduces the size of the binary tree, the blacklist allows for early pruning if it's
+detected, and the whitelist is only checked at the very end.
 
-As you can see, the ones on the left are a lot more random, while the ones on the right are a lot more structured.
+`generate_glyphs.py` has two default templates: 5x5 and 3x5, both have corners filled (easier to spot), other templates
+are simple to make. The list of lists should look like the image (kernels as well), 1 for filled in, 0 for unfilled and
+-1 for the cells that the code can work with. Keep in mind that the size of the template, the amount of flexible bits
+there are, directly affects the running time. The whitelist is empty by default, and the blacklist is set up to
+eliminate thick gaps and lines, and to eliminate diagonal touching. Here you can see the results of the two default
+templates.
 
-The default rules are set to:
+| 5x5 glyph grid                                       | 3x5 glyph grid                                       |
+|------------------------------------------------------|------------------------------------------------------|
+| ![5 by 5 glyph grid](media/5x5_glyph_10x10_grid.png) | ![3 by 5 glyph grid](media/3x5_glyph_10x10_grid.png) |
 
-1. Create 5x5 glyphs
-2. Blacklist a glyph from having a 2x2 white space
-3. Blacklist a glyph from having a 2x2 black space
-4. Blacklist pixels from touching only on the diagonal
-5. Whitelist the glyphs corners to be white (each glyph's corners must be filled)
-6. No symmetry checks, all 29k are created in the database
+The produced images are dumped into a folder, the grid is useful to just quickly scan for aesthetics, or to pick out the
+good ones since the default amount is likely to be much larger than needed. The 5x5 with filled corners and the default
+blacklist and no whitelist produces a total of 29,130 glyphs, and while some glyphs may look similar to others, it's
+more than enough. For example, experts in Chinese may know up to 10,000 characters, far more than ever needed in daily
+life or even specialized fields of work, and even then you could effectively fit it 3 times into these glyphs.
 
-The default glyphs are good for games, primarily for UI icons or status effect symbols, but they also work quite well
-for conlangs or ciphers. The 2k clean looking glyphs means that you could even transcribe about 95% of the most common
-Chinese characters, and dip into the asymmetric ones for the unique usecases. But of course you can edit the generation
-rules to make even more, or less, or a different size or with different aesthetic rules.
+The smaller, 3x5 glyphs, even with the restrictions of needing the corners filled, still produce a likely overkill
+amount of 294 glyphs. Meaning you could fit in all the standard ASCII characters into these glyphs. Even the largest
+character language in the world, Tamil with 247 characters, can be entirely fit into these glyphs.
+
+`generate_glyphs.py` also produces Gephi compatible `nodes.csv` and `edges.csv`. Nodes are the glyphs, and edges are
+only present for the nodes that are one bit flip away. It's pretty cool to look at, how the blacklist and kernel prune
+the original graph, if there's any notable groups or unique nodes. Do `File > Import spreadsheet...` and import
+`nodes.csv` first and then `edges.csv`. Recommended to color nodes by their degree, just for visualization. Here's the
+graphs produced for the 5x5 and 3x5 glyphs from before.
+
+| 5x5 Gephi graph                            | 3x5 Gephi graph                            |
+|--------------------------------------------|--------------------------------------------|
+| ![5 by 5 Gephi graph](media/5x5_gephi.png) | ![3 by 5 Gephi graph](media/3x5_gephi.png) |
+
+The default blacklist and available templates are thus great for games, primarily for UI icons or status effect symbols,
+but are also very good for conlangs or ciphers. Like discussed before, the default glyphs are likely more than
+sufficient for any usecase. But you can always add more blacklists to be more specific, or add kernels to the whitelist
+so that glyphs fit a certain aesthetic (say a 3x3 "circle") somewhere within them. Or change the template to force all
+glyphs to share some common feature, like in the case here, filled corners.
 
 Have fun!
 
