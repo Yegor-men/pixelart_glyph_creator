@@ -1,5 +1,4 @@
 ![Banner](media/banner.png)
-[![License](https://img.shields.io/badge/License-Apache%202.0-purple.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
 # Pixelart Glyph Creator
 
