@@ -2,23 +2,95 @@
 
 # Pixelart Glyph Creator
 
-A procedural binary glyph workshop. Design a template, blacklist unwanted local patterns, whitelist required motifs,
-and render every valid glyph — now from a polished, entirely client-side web app.
+A comfortable, browser-based workshop for generating coherent families of binary pixel-art glyphs. Define the parts
+every glyph shares, forbid patterns you dislike, require motifs you want, and export every valid result in one ZIP.
 
-The browser edition is the recommended interface. The original Python tools remain available and unchanged in purpose
-for scripted or batch workflows.
+**[Open Pixelart Glyph Creator](https://yegor-men.github.io/pixelart-glyph-creator/)**
 
-## Use the browser app
+The application is completely client-side: generation, previewing, PNG rendering, graph construction, and ZIP creation
+all happen on your device. Nothing is uploaded, and there is no account, backend, installation, or build step.
 
-The live app is designed for GitHub Pages. Once Pages is enabled for this repository, it is available at:
+## What you can control
 
-<https://yegor-men.github.io/pixelart-glyph-creator/>
+- Resize the glyph template from 1×1 through 10×10.
+- Mark template cells as flexible, always filled, or always empty.
+- Add, duplicate, resize, edit, and remove blacklist or whitelist kernels.
+- Preview an evenly distributed sample of the valid glyphs.
+- Choose PNG scale, margin, ink colour, paper colour, and archive name.
+- Export and import configurations as JSON.
+- Render the complete valid set with live progress and immediate cancellation.
 
-Everything runs on the device. No configuration or glyph data is sent to a server.
+Your current configuration is saved automatically in the browser.
 
-### Run locally
+## The rule model
 
-Clone the repository, serve its root with any static file server, and open the printed URL:
+Every template and kernel is a matrix containing three possible values:
+
+| Value | In the template | In a kernel |
+|---:|---|---|
+| `1` | This pixel must be filled. | The matched pixel must be filled. |
+| `0` | This pixel must be empty. | The matched pixel must be empty. |
+| `-1` | This pixel is flexible. | This pixel is ignored—a wildcard. |
+
+The three rule groups have different jobs:
+
+1. **Template:** establishes the glyph dimensions and fixes pixels shared by every result.
+2. **Blacklist:** rejects a glyph if any blacklisted kernel matches anywhere inside it.
+3. **Whitelist:** when at least one whitelist kernel exists, keeps a glyph only if one or more of those kernels matches.
+
+Whitelist kernels use **OR** semantics, not AND: a glyph does not need to contain every whitelisted pattern. Kernels are
+never wrapped or clipped; a match is considered only where the entire kernel fits inside the glyph.
+
+## How glyph generation works
+
+Suppose the template contains `F` flexible cells. Those cells describe `2^F` possible bit patterns. Fixed template
+cells do not create branches, so locking even a few cells can reduce the search dramatically.
+
+The generator processes that search as follows:
+
+1. The template is flattened in row-major order: left to right, then top to bottom.
+2. Every legal placement of every kernel is precomputed. A placement records which glyph cells it checks and the index
+   of its final cell in row-major order.
+3. A depth-first search assigns each flexible cell first to `0`, then to `1`. Fixed cells are copied directly from the
+   template.
+4. As soon as the search reaches the final cell covered by a blacklist placement, that placement is tested. If it
+   matches, the entire remaining branch is rejected immediately. There is no need to construct all of its leaves.
+5. At a complete candidate, whitelist placements are checked. An empty whitelist passes automatically; otherwise at
+   least one placement must match.
+6. A surviving candidate becomes a bitstring such as `010110...`. The generator also records its number of filled
+   cells and its count of orthogonally connected filled components.
+7. Once enumeration finishes, each bitstring is rendered as a compact one-bit indexed PNG. The exporter then builds
+   metadata and a graph connecting glyphs that differ by exactly one bit.
+
+The progress bar remains accurate when blacklist pruning skips a branch. A skipped branch represents
+`2^(remaining flexible cells)` completed assignments, so the processed count advances by that amount instead of only
+counting leaves that were explicitly visited.
+
+The upper-bound enumeration cost is exponential in the number of flexible cells. Blacklists can make a run much
+faster, but they cannot make an enormous unconstrained template predictable. The interface asks for confirmation above
+10 million theoretical assignments and disables runs above 268 million until more template cells are fixed.
+
+## Export format
+
+**Render & download** creates a ZIP containing one top-level folder:
+
+```text
+pixelart-glyphs-4x4/
+  glyphs/           # One PNG per glyph, named by its row-major bitstring
+  metadata.csv      # bitstring,width,height,filename
+  nodes.csv         # Gephi-compatible glyph nodes
+  edges.csv         # Undirected one-bit-flip neighbours
+  settings.json     # Exact configuration and run summary
+  README.txt        # A short description of the archive
+```
+
+`nodes.csv` records each glyph's filled-cell and connected-component counts. `edges.csv` contains each undirected edge
+once, with a weight of `1`. Import the two files into Gephi with **File → Import spreadsheet** to explore the generated
+glyph space as a graph.
+
+## Run locally
+
+Clone the repository, serve its root as static files, and open the local URL:
 
 ```bash
 git clone https://github.com/Yegor-men/pixelart-glyph-creator.git
@@ -26,87 +98,48 @@ cd pixelart-glyph-creator
 python3 -m http.server 8000
 ```
 
-Then visit <http://localhost:8000>. A server is needed because browsers do not allow a Web Worker to load reliably from
-a `file://` page. There is no install, build, package manager, or backend.
+Then visit <http://localhost:8000>. Opening `index.html` directly through `file://` is not supported because browsers
+restrict Web Workers on local files. Python is only being used here as a convenient static file server; the application
+itself is JavaScript and requires no Python packages.
 
-### Publish with GitHub Pages
+Any other static server works as well, for example `npx serve .`.
 
-1. Open the repository's **Settings → Pages**.
-2. Under **Build and deployment**, choose **Deploy from a branch**.
-3. Select the `main` branch and the `/ (root)` folder, then save.
-
-The root `index.html` and relative asset paths are ready for project-site hosting.
-
-## Browser workflow
-
-1. Pick a preset or resize the glyph template.
-2. Click or drag over cells to cycle between flexible (`-1`), filled (`1`), and empty (`0`).
-3. Add, duplicate, resize, edit, or remove blacklist and whitelist kernels.
-4. Choose PNG scale, margin, colours, and an archive name.
-5. Select **Render & download**. Enumeration happens in a background worker, with live progress and immediate cancel.
-
-The downloaded ZIP contains one top-level folder with:
+## Project structure
 
 ```text
-pixelart-glyphs-4x4/
-  glyphs/           # PNGs named by row-major bitstrings
-  metadata.csv      # bitstring,width,height,filename
-  nodes.csv         # Gephi-compatible glyph nodes
-  edges.csv         # undirected one-bit-flip neighbours
-  settings.json     # exact reproducible browser configuration
-  README.txt        # archive format notes
+index.html            Page structure and accessible controls
+styles.css            Responsive visual design
+app.js                 UI state, editing, progress, previews, and ZIP orchestration
+generator.worker.js    Background enumeration, filtering, and glyph statistics
+exporter.js            Compact indexed-PNG encoding helpers
+vendor/fflate.min.js   Vendored compression library
+media/                 README examples and project artwork
+AGENTS.md              Architecture and contribution guidance for coding agents
 ```
 
-The interface automatically remembers the current configuration in the browser. Settings can also be imported or
-exported as JSON. Searches above 10 million theoretical assignments require confirmation; searches above 268 million
-are disabled until more template cells are fixed. The number of flexible cells controls the exponential search space.
-
-## How the rules work
-
-The generator uses three concepts:
-
-1. **Template** — fixed pixels shared by every output. `1` is filled, `0` is empty, and `-1` is flexible.
-2. **Blacklist** — if any blacklisted kernel matches anywhere, the glyph is rejected. `-1` inside a kernel is a wildcard.
-3. **Whitelist** — when whitelist kernels exist, at least one of them must match somewhere in the glyph.
-
-The template reduces the binary search tree directly. Blacklists allow early branch pruning, while whitelists are
-checked on complete candidates. The browser implementation follows the same rules as `generate_glyphs.py`.
-
-## Python workflow
-
-The original scripts are deliberately retained:
-
-```bash
-python3 -m pip install pillow tqdm
-python3 generate_glyphs.py
-python3 render_grid_from_export.py 4x4 --cols 10 --rows 10
-```
-
-Edit `TEMPLATE`, `BLACKLISTED_KERNELS`, `WHITELISTED_KERNELS`, and `EXPORT_DIR` near the top of
-`generate_glyphs.py`, then run it to produce the same PNG/CSV/Gephi data shape. `render_grid_from_export.py` creates a
-random sample mosaic from an export folder.
+The project intentionally uses plain HTML, CSS, and JavaScript with no compilation step. Relative asset URLs allow the
+same files to work locally and under the `/pixelart-glyph-creator/` GitHub Pages project path.
 
 ## Examples
 
-With filled corners, the default filters produce 29,130 valid 5×5 glyphs and 294 valid 3×5 glyphs.
+With filled corners and the default blacklist, the generator produces 29,130 valid 5×5 glyphs and 294 valid 3×5
+glyphs.
 
 | 5×5 glyph grid | 3×5 glyph grid |
 |---|---|
 | ![5 by 5 glyph grid](media/5x5_glyph_10x10_grid.png) | ![3 by 5 glyph grid](media/3x5_glyph_10x10_grid.png) |
 
-`nodes.csv` and `edges.csv` can be imported into Gephi with **File → Import spreadsheet**. Edges connect glyphs that
-are one bit flip apart.
-
-| 5×5 Gephi graph | 3×5 Gephi graph |
+| 5×5 neighbour graph | 3×5 neighbour graph |
 |---|---|
 | ![5 by 5 Gephi graph](media/5x5_gephi.png) | ![3 by 5 Gephi graph](media/3x5_gephi.png) |
 
-These sets work well for game UI icons, status effects, conlangs, ciphers, and any project that needs a coherent family
+These sets work well for game UI icons, status effects, conlangs, ciphers, and any project that needs a related family
 of small symbols.
 
 ![Hand-drawn glyphs](media/handdrawn.png)
 
 ## Browser dependency
 
-The repository vendors [fflate](https://github.com/101arrowz/fflate) 0.8.2 for local, offline ZIP/PNG compression. Its
-MIT license is included in `vendor/fflate.LICENSE.txt`.
+The repository vendors [fflate](https://github.com/101arrowz/fflate) 0.8.2 so PNG and ZIP compression work locally and
+without a CDN. Its MIT license is included in `vendor/fflate.LICENSE.txt`. Do not remove `vendor/` unless the compression
+implementation is replaced.

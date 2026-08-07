@@ -3,10 +3,10 @@
 /**
  * Browser worker for exhaustive glyph generation.
  *
- * The implementation mirrors generate_glyphs.py: blacklist kernels prune a
- * branch as soon as their final cell is known, while whitelist kernels are
- * checked at complete candidates. This file also exposes CommonJS exports so
- * the core can be regression-tested with Node without a browser.
+ * Blacklist kernels prune a branch as soon as their final cell is known,
+ * while whitelist kernels are checked at complete candidates. This file also
+ * exposes CommonJS exports so the core can be regression-tested with Node
+ * without a browser.
  */
 
 const PROGRESS_INTERVAL_MS = 45;
