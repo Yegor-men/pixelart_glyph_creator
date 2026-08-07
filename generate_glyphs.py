@@ -26,12 +26,19 @@ import sys
 # ---------------------------
 
 # TEMPLATE: rows x cols matrix of 1/0/-1 (1=must be ON, 0=must be OFF, -1=don't care)
+# TEMPLATE = [
+# 	[1, -1, -1, -1, 1],
+# 	[-1, -1, -1, -1, -1],
+# 	[-1, -1, -1, -1, -1],
+# 	[-1, -1, -1, -1, -1],
+# 	[1, -1, -1, -1, 1],
+# ]
+
 TEMPLATE = [
-	[1, -1, -1, -1, 1],
-	[-1, -1, -1, -1, -1],
-	[-1, -1, -1, -1, -1],
-	[-1, -1, -1, -1, -1],
-	[1, -1, -1, -1, 1],
+	[-1, -1, -1, -1],
+	[-1, -1, -1, -1],
+	[-1, -1, -1, -1],
+	[-1, -1, -1, -1],
 ]
 
 # TEMPLATE = [
@@ -73,7 +80,7 @@ WHITELISTED_KERNELS = [
 ]
 
 # Export folder name (edit)
-EXPORT_DIR = Path("foo")
+EXPORT_DIR = Path("4x4")
 
 # Image rendering params
 SCALE = 20  # pixels per cell

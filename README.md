@@ -2,62 +2,111 @@
 
 # Pixelart Glyph Creator
 
-A simple, procedural binary glyph creator, allowing to create arbitrary size glyphs with arbitrary size blacklist and
-whitelist kernels.
+A procedural binary glyph workshop. Design a template, blacklist unwanted local patterns, whitelist required motifs,
+and render every valid glyph — now from a polished, entirely client-side web app.
 
-To use, first run `generate_glyphs.py` to create the export folder `foo/` with all the glyphs as .png images and the
-`metadata.csv` and Gephi compatible `nodes.csv` and `edges.csv` (edge between glyphs that are 1 bit flip away). Then run
-`render_grid_from_export.py` to render a grid of glyphs from the export
-folder.
+The browser edition is the recommended interface. The original Python tools remain available and unchanged in purpose
+for scripted or batch workflows.
 
-Internally, the code uses 3 main things:
+## Use the browser app
 
-1. Template
-2. Blacklist
-3. Whitelist
+The live app is designed for GitHub Pages. Once Pages is enabled for this repository, it is available at:
 
-The template dictates which pixels are fixed, how they must look like on the output end. The blacklist contains kernels
-that mustn't be present anywhere in the glyph. The whitelist contains kernels that must be contained at least once in
-the glyph. The template directly reduces the size of the binary tree, the blacklist allows for early pruning if it's
-detected, and the whitelist is only checked at the very end.
+<https://yegor-men.github.io/pixelart-glyph-creator/>
 
-`generate_glyphs.py` has two default templates: 5x5 and 3x5, both have corners filled (easier to spot), other templates
-are simple to make. The list of lists should look like the image (kernels as well), 1 for filled in, 0 for unfilled and
--1 for the cells that the code can work with. Keep in mind that the size of the template, the amount of flexible bits
-there are, directly affects the running time. The whitelist is empty by default, and the blacklist is set up to
-eliminate thick gaps and lines, and to eliminate diagonal touching. Here you can see the results of the two default
-templates.
+Everything runs on the device. No configuration or glyph data is sent to a server.
 
-| 5x5 glyph grid                                       | 3x5 glyph grid                                       |
-|------------------------------------------------------|------------------------------------------------------|
+### Run locally
+
+Clone the repository, serve its root with any static file server, and open the printed URL:
+
+```bash
+git clone https://github.com/Yegor-men/pixelart-glyph-creator.git
+cd pixelart-glyph-creator
+python3 -m http.server 8000
+```
+
+Then visit <http://localhost:8000>. A server is needed because browsers do not allow a Web Worker to load reliably from
+a `file://` page. There is no install, build, package manager, or backend.
+
+### Publish with GitHub Pages
+
+1. Open the repository's **Settings → Pages**.
+2. Under **Build and deployment**, choose **Deploy from a branch**.
+3. Select the `main` branch and the `/ (root)` folder, then save.
+
+The root `index.html` and relative asset paths are ready for project-site hosting.
+
+## Browser workflow
+
+1. Pick a preset or resize the glyph template.
+2. Click or drag over cells to cycle between flexible (`-1`), filled (`1`), and empty (`0`).
+3. Add, duplicate, resize, edit, or remove blacklist and whitelist kernels.
+4. Choose PNG scale, margin, colours, and an archive name.
+5. Select **Render & download**. Enumeration happens in a background worker, with live progress and immediate cancel.
+
+The downloaded ZIP contains one top-level folder with:
+
+```text
+pixelart-glyphs-4x4/
+  glyphs/           # PNGs named by row-major bitstrings
+  metadata.csv      # bitstring,width,height,filename
+  nodes.csv         # Gephi-compatible glyph nodes
+  edges.csv         # undirected one-bit-flip neighbours
+  settings.json     # exact reproducible browser configuration
+  README.txt        # archive format notes
+```
+
+The interface automatically remembers the current configuration in the browser. Settings can also be imported or
+exported as JSON. Searches above 10 million theoretical assignments require confirmation; searches above 268 million
+are disabled until more template cells are fixed. The number of flexible cells controls the exponential search space.
+
+## How the rules work
+
+The generator uses three concepts:
+
+1. **Template** — fixed pixels shared by every output. `1` is filled, `0` is empty, and `-1` is flexible.
+2. **Blacklist** — if any blacklisted kernel matches anywhere, the glyph is rejected. `-1` inside a kernel is a wildcard.
+3. **Whitelist** — when whitelist kernels exist, at least one of them must match somewhere in the glyph.
+
+The template reduces the binary search tree directly. Blacklists allow early branch pruning, while whitelists are
+checked on complete candidates. The browser implementation follows the same rules as `generate_glyphs.py`.
+
+## Python workflow
+
+The original scripts are deliberately retained:
+
+```bash
+python3 -m pip install pillow tqdm
+python3 generate_glyphs.py
+python3 render_grid_from_export.py 4x4 --cols 10 --rows 10
+```
+
+Edit `TEMPLATE`, `BLACKLISTED_KERNELS`, `WHITELISTED_KERNELS`, and `EXPORT_DIR` near the top of
+`generate_glyphs.py`, then run it to produce the same PNG/CSV/Gephi data shape. `render_grid_from_export.py` creates a
+random sample mosaic from an export folder.
+
+## Examples
+
+With filled corners, the default filters produce 29,130 valid 5×5 glyphs and 294 valid 3×5 glyphs.
+
+| 5×5 glyph grid | 3×5 glyph grid |
+|---|---|
 | ![5 by 5 glyph grid](media/5x5_glyph_10x10_grid.png) | ![3 by 5 glyph grid](media/3x5_glyph_10x10_grid.png) |
 
-The produced images are dumped into a folder, the grid is useful to just quickly scan for aesthetics, or to pick out the
-good ones since the default amount is likely to be much larger than needed. The 5x5 with filled corners and the default
-blacklist and no whitelist produces a total of 29,130 glyphs, and while some glyphs may look similar to others, it's
-more than enough. For example, experts in Chinese may know up to 10,000 characters, far more than ever needed in daily
-life or even specialized fields of work, and even then you could effectively fit it 3 times into these glyphs.
+`nodes.csv` and `edges.csv` can be imported into Gephi with **File → Import spreadsheet**. Edges connect glyphs that
+are one bit flip apart.
 
-The smaller, 3x5 glyphs, even with the restrictions of needing the corners filled, still produce a likely overkill
-amount of 294 glyphs. Meaning you could fit in all the standard ASCII characters into these glyphs. Even the largest
-character language in the world, Tamil with 247 characters, can be entirely fit into these glyphs.
-
-`generate_glyphs.py` also produces Gephi compatible `nodes.csv` and `edges.csv`. Nodes are the glyphs, and edges are
-only present for the nodes that are one bit flip away. It's pretty cool to look at, how the blacklist and kernel prune
-the original graph, if there's any notable groups or unique nodes. Do `File > Import spreadsheet...` and import
-`nodes.csv` first and then `edges.csv`. Recommended to color nodes by their degree, just for visualization. Here's the
-graphs produced for the 5x5 and 3x5 glyphs from before.
-
-| 5x5 Gephi graph                            | 3x5 Gephi graph                            |
-|--------------------------------------------|--------------------------------------------|
+| 5×5 Gephi graph | 3×5 Gephi graph |
+|---|---|
 | ![5 by 5 Gephi graph](media/5x5_gephi.png) | ![3 by 5 Gephi graph](media/3x5_gephi.png) |
 
-The default blacklist and available templates are thus great for games, primarily for UI icons or status effect symbols,
-but are also very good for conlangs or ciphers. Like discussed before, the default glyphs are likely more than
-sufficient for any usecase. But you can always add more blacklists to be more specific, or add kernels to the whitelist
-so that glyphs fit a certain aesthetic (say a 3x3 "circle") somewhere within them. Or change the template to force all
-glyphs to share some common feature, like in the case here, filled corners.
+These sets work well for game UI icons, status effects, conlangs, ciphers, and any project that needs a coherent family
+of small symbols.
 
-Have fun!
+![Hand-drawn glyphs](media/handdrawn.png)
 
-![outro_image](media/handdrawn.png)
+## Browser dependency
+
+The repository vendors [fflate](https://github.com/101arrowz/fflate) 0.8.2 for local, offline ZIP/PNG compression. Its
+MIT license is included in `vendor/fflate.LICENSE.txt`.

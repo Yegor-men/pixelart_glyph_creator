@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Design, filter, preview, and export procedural pixel-art glyph sets in your browser.">
+  <meta name="theme-color" content="#f4f2ec">
+  <title>Glyph Foundry — Pixel-art glyph generator</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231b1d1c'/%3E%3Cpath d='M8 8h6v6H8zm10 0h6v6h-6zM8 18h6v6H8zm10 0h6v6h-6z' fill='%2374d3ae'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to generator</a>
+
+  <div class="app-shell">
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="Glyph Foundry home">
+        <span class="brand-mark" aria-hidden="true">
+          <i></i><i></i><i></i><i></i>
+        </span>
+        <span>
+          <strong>Glyph Foundry</strong>
+          <small>Pixel-art generator</small>
+        </span>
+      </a>
+      <nav class="header-actions" aria-label="Project links">
+        <span class="local-badge"><span></span>Runs in your browser</span>
+        <a class="text-link" href="https://github.com/Yegor-men/pixelart-glyph-creator#readme">Guide</a>
+        <a class="icon-link" href="https://github.com/Yegor-men/pixelart-glyph-creator" aria-label="View source on GitHub" title="View source on GitHub">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.87c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.35 1.09 2.92.83.09-.65.35-1.09.64-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.57 9.57 0 0 1 12 6.82c.85 0 1.7.11 2.5.34 1.91-1.3 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.93.36.31.68.92.68 1.86v2.76c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg>
+        </a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-copy">
+          <div class="eyebrow">Procedural symbol workshop</div>
+          <h1 id="page-title">Shape a visual language.<br><span>Render every possibility.</span></h1>
+          <p>Set the rules once, then let the browser enumerate, filter, preview, and package your entire glyph family.</p>
+        </div>
+        <div class="hero-runner">
+          <div class="estimate-card" id="estimateCard">
+            <span>Search space</span>
+            <strong id="assignmentEstimate">65,536</strong>
+            <small id="estimateDetail">16 flexible cells</small>
+          </div>
+          <button class="primary-button" id="renderButton" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.75C4 4.78 4.78 4 5.75 4h12.5c.97 0 1.75.78 1.75 1.75v12.5c0 .97-.78 1.75-1.75 1.75H5.75C4.78 20 4 19.22 4 18.25V5.75Zm3.5 1.5v3.5h3.5v-3.5H7.5Zm5.5 0v3.5h3.5v-3.5H13Zm-5.5 5.5v3.5h3.5v-3.5H7.5Zm5.5 0v3.5h3.5v-3.5H13Z"/></svg>
+            <span>Render &amp; download</span>
+          </button>
+          <small class="runner-note">Exports a ZIP with PNGs, metadata, and graph data</small>
+        </div>
+      </section>
+
+      <div class="workspace" id="workspace">
+        <div class="editor-column">
+          <section class="panel template-panel" aria-labelledby="template-title">
+            <div class="panel-heading">
+              <div>
+                <span class="section-number">01</span>
+                <div>
+                  <h2 id="template-title">Glyph template</h2>
+                  <p>Define the canvas and lock any shared pixels.</p>
+                </div>
+              </div>
+              <label class="select-field">
+                <span class="sr-only">Template preset</span>
+                <select id="presetSelect">
+                  <option value="open-4x4">Open 4 × 4</option>
+                  <option value="corners-5x5">Cornered 5 × 5</option>
+                  <option value="corners-3x5">Cornered 3 × 5</option>
+                  <option value="custom" disabled>Custom</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="template-layout">
+              <div class="matrix-wrap matrix-wrap-large">
+                <div class="matrix-grid" id="templateGrid" role="grid" aria-label="Glyph template"></div>
+              </div>
+              <div class="template-controls">
+                <div class="dimension-row">
+                  <label class="number-field">
+                    <span>Width</span>
+                    <input id="templateWidth" type="number" min="1" max="10" value="4" inputmode="numeric">
+                  </label>
+                  <span class="dimension-times" aria-hidden="true">×</span>
+                  <label class="number-field">
+                    <span>Height</span>
+                    <input id="templateHeight" type="number" min="1" max="10" value="4" inputmode="numeric">
+                  </label>
+                </div>
+                <div class="cell-legend" aria-label="Cell states">
+                  <div><span class="legend-cell state-any"><i></i></span><span><strong>Flexible</strong><small>Generator decides</small></span></div>
+                  <div><span class="legend-cell state-on"></span><span><strong>Filled</strong><small>Always on</small></span></div>
+                  <div><span class="legend-cell state-off"></span><span><strong>Empty</strong><small>Always off</small></span></div>
+                </div>
+                <p class="interaction-hint"><span>Tip</span> Click a cell to cycle its state. Click and drag to paint.</p>
+                <button class="quiet-button" id="clearTemplateButton" type="button">Make every cell flexible</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="filters-title">
+            <div class="panel-heading filters-heading">
+              <div>
+                <span class="section-number">02</span>
+                <div>
+                  <h2 id="filters-title">Pattern filters</h2>
+                  <p>Reject unwanted shapes and require visual motifs.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="filter-groups">
+              <div class="filter-group">
+                <div class="group-heading">
+                  <div>
+                    <span class="filter-icon filter-icon-blacklist" aria-hidden="true">×</span>
+                    <div><h3>Blacklist</h3><p>A glyph is rejected if <em>any</em> kernel matches.</p></div>
+                  </div>
+                  <button class="add-button" id="addBlacklistButton" type="button"><span>+</span> Add kernel</button>
+                </div>
+                <div class="kernel-list" id="blacklistList"></div>
+              </div>
+
+              <div class="filter-group">
+                <div class="group-heading">
+                  <div>
+                    <span class="filter-icon filter-icon-whitelist" aria-hidden="true">✓</span>
+                    <div><h3>Whitelist</h3><p>A glyph is kept if <em>at least one</em> kernel matches.</p></div>
+                  </div>
+                  <button class="add-button" id="addWhitelistButton" type="button"><span>+</span> Add kernel</button>
+                </div>
+                <div class="kernel-list" id="whitelistList"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="output-title">
+            <div class="panel-heading">
+              <div>
+                <span class="section-number">03</span>
+                <div>
+                  <h2 id="output-title">Output</h2>
+                  <p>Choose how every PNG and the archive are written.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="output-grid">
+              <label class="control-field control-field-wide">
+                <span>Archive name</span>
+                <input id="archiveName" type="text" value="pixelart-glyphs-4x4" maxlength="64" spellcheck="false">
+              </label>
+              <label class="control-field">
+                <span>Pixels per cell</span>
+                <input id="pixelScale" type="number" min="1" max="64" value="20" inputmode="numeric">
+              </label>
+              <label class="control-field">
+                <span>Margin <small>cells</small></span>
+                <input id="imageMargin" type="number" min="0" max="12" value="1" inputmode="numeric">
+              </label>
+              <label class="control-field color-field">
+                <span>Ink</span>
+                <span class="color-input-wrap"><input id="inkColor" type="color" value="#000000"><code id="inkColorLabel">#000000</code></span>
+              </label>
+              <label class="control-field color-field">
+                <span>Paper</span>
+                <span class="color-input-wrap"><input id="paperColor" type="color" value="#ffffff"><code id="paperColorLabel">#FFFFFF</code></span>
+              </label>
+            </div>
+            <div class="config-actions">
+              <span>Configuration is saved automatically in this browser.</span>
+              <div>
+                <button class="quiet-button" id="importConfigButton" type="button">Import JSON</button>
+                <input class="sr-only" id="importConfigInput" type="file" accept="application/json,.json">
+                <button class="quiet-button" id="exportConfigButton" type="button">Export JSON</button>
+                <button class="quiet-button danger-hover" id="resetButton" type="button">Reset</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <aside class="results-column" aria-label="Generation results">
+          <section class="panel run-panel" id="runPanel">
+            <div class="run-panel-heading">
+              <div>
+                <span class="status-dot" id="statusDot"></span>
+                <div><h2 id="runTitle">Ready to render</h2><p id="runSubtitle">Configure your glyph family, then start the run.</p></div>
+              </div>
+              <button class="cancel-button" id="cancelButton" type="button" hidden>Cancel</button>
+            </div>
+
+            <div class="progress-block" id="progressBlock" hidden>
+              <div class="progress-labels"><span id="progressPhase">Enumerating patterns</span><strong id="progressPercent">0%</strong></div>
+              <div class="progress-track" role="progressbar" aria-label="Generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressTrack"><span id="progressBar"></span></div>
+              <div class="progress-counts"><span id="progressCount">0 / 0</span><span id="validCount">0 valid</span></div>
+            </div>
+
+            <div class="run-stats" id="runStats">
+              <div><span>Valid glyphs</span><strong id="statValid">—</strong></div>
+              <div><span>Rejected</span><strong id="statRejected">—</strong></div>
+              <div><span>Elapsed</span><strong id="statElapsed">—</strong></div>
+            </div>
+
+            <button class="download-button" id="downloadAgainButton" type="button" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3h2v10.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V3Zm-6 16h14v2H5v-2Z"/></svg>
+              Download ZIP again
+            </button>
+            <div class="error-message" id="errorMessage" role="alert" hidden></div>
+          </section>
+
+          <section class="panel preview-panel" aria-labelledby="preview-title">
+            <div class="preview-heading">
+              <div><h2 id="preview-title">Glyph preview</h2><p id="previewMeta">Results will appear here.</p></div>
+              <div class="preview-key"><i></i> Valid</div>
+            </div>
+            <div class="empty-preview" id="emptyPreview">
+              <div class="empty-glyph" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <strong>No glyphs yet</strong>
+              <p>Your first valid symbols will collect here while the archive is prepared.</p>
+            </div>
+            <div class="preview-grid" id="previewGrid"></div>
+          </section>
+
+          <section class="panel format-panel">
+            <h3>Inside every archive</h3>
+            <ul>
+              <li><code>glyphs/*.png</code><span>One crisp image per glyph</span></li>
+              <li><code>metadata.csv</code><span>Dimensions and filenames</span></li>
+              <li><code>nodes.csv</code><span>Gephi-compatible glyph nodes</span></li>
+              <li><code>edges.csv</code><span>One-bit-neighbour graph</span></li>
+              <li><code>settings.json</code><span>A reproducible copy of this setup</span></li>
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </main>
+
+    <footer>
+      <span>Glyph Foundry runs entirely on your device. No glyphs or settings are uploaded.</span>
+      <span>Original Python tools remain available in the repository.</span>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="vendor/fflate.min.js"></script>
+  <script src="exporter.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
